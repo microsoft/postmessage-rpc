@@ -16,7 +16,8 @@
     ],
     "types": [
       "mocha",
-      "node"
+      "node",
+      "chai-subset"
     ]
   },
   "include": [

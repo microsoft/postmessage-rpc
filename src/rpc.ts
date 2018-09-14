@@ -53,9 +53,18 @@ export interface IRPCOptions {
 }
 
 /**
+ * Magic ID used for the "ready" call.
+ */
+const magicReadyCallId = -1;
+
+/**
  * Primitive postMessage based RPC.
  */
 export class RPC extends EventEmitter {
+  /**
+   * Promise that resolves once the RPC connection is established.
+   */
+  public readonly isReady: Promise<void>;
   /**
    * A map of IDs to callbacks we'll fire whenever the remote frame responds.
    */
@@ -85,17 +94,35 @@ export class RPC extends EventEmitter {
   /**
    * Creates a new RPC instance. Note: you should use the `rpc` singleton,
    * rather than creating this class directly, in your controls.
-   *
-   * @param {window} target The window instance to make calls to or from.
-   * @param {string} protocolVersion The protocol version to communicate
-   * to the remote.
-   * @param {string} [origin='*'] Optionally, allow communication with the
-   * target if its origin matches this. If "*", all origins are permitted.
    */
   constructor(private readonly options: IRPCOptions) {
     super();
     this.unsubscribeCallback = (options.receiver || defaultRecievable).readMessages(this.listener);
-    this.call('ready', { protocolVersion: options.protocolVersion || '1.0' }, false);
+
+    // Both sides will fire "ready" when they're set up. When either we get
+    // a ready or the other side successfully responds that they're ready,
+    // resolve the "ready" promise.
+    this.isReady = new Promise<void>(resolve => {
+      const response = { protocolVersion: options.protocolVersion || '1.0' };
+
+      this.expose('ready', () => {
+        resolve();
+        return response;
+      });
+
+      this.call<void>('ready', response)
+        .then(resolve)
+        .catch(resolve);
+    });
+  }
+
+  /**
+   * Create instantiates a new RPC instance and waits until it's ready
+   * before returning.
+   */
+  public create(options: IRPCOptions): Promise<RPC> {
+    const rpc = new RPC(options);
+    return rpc.isReady.then(() => rpc);
   }
 
   /**
@@ -158,7 +185,7 @@ export class RPC extends EventEmitter {
    * promise is returned that resolves once the server responds.
    */
   public call<T>(method: string, params: object, waitForReply: boolean = true): Promise<T> | void {
-    const id = this.callCounter;
+    const id = method === 'ready' ? magicReadyCallId : this.callCounter;
     const packet: IRPCMethod<any> = {
       type: 'method',
       serviceID: this.options.serviceId,
@@ -223,6 +250,18 @@ export class RPC extends EventEmitter {
     this.options.target.postMessage(JSON.stringify(message), this.options.origin || '*');
   }
 
+  private isReadySignal(packet: RPCMessageWithCounter<any>) {
+    if (packet.type === 'method' && packet.method === 'ready') {
+      return true;
+    }
+
+    if (packet.type === 'reply' && packet.id === magicReadyCallId) {
+      return true;
+    }
+
+    return false;
+  }
+
   private listener = (ev: IMessageEvent) => {
     // If we got data that wasn't a string or could not be parsed, or was
     // from a different remote, it's not for us.
@@ -245,12 +284,16 @@ export class RPC extends EventEmitter {
     // Reset the call counter when we get a "ready" so that the other end sees
     // calls starting from 0.
 
-    if (packet.type === 'method' && packet.method === 'ready') {
-      this.remoteProtocolVersion = packet.params.protocolVersion;
+    if (this.isReadySignal(packet)) {
+      this.remoteProtocolVersion =
+        packet.type === 'method' ? packet.params.protocolVersion : packet.result.protocolVersion;
       this.callCounter = 0;
+      this.reorder.reset(packet.counter);
+      this.emit('isReady', true);
     }
 
     for (const p of this.reorder.append(packet)) {
+      this.emit('recvData', p);
       this.dispatchIncoming(p);
     }
   };
@@ -268,7 +311,7 @@ export class RPC extends EventEmitter {
           type: 'reply',
           serviceID: this.options.serviceId,
           id: packet.id,
-          error: { code: 4003, message: 'Unknown method name' },
+          error: { code: 4003, message: `Unknown method name "${packet.method}"` },
           result: null,
         });
         break;

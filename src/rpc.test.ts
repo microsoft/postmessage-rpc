@@ -1,294 +1,295 @@
-import { expect } from 'chai';
+// import { expect } from 'chai';
 
 import { RPCError } from './error';
-import { RPC } from './rpc';
-import { IMessageEvent, RPCMessage } from './types';
+import { Action, Definition, testMarbles } from './marbles.test';
 
-const delay = (duration: number = 1) => new Promise(resolve => setTimeout(resolve, duration));
+const makeReply = (id: number, counter: number, result: any) => ({
+  data: {
+    type: 'reply',
+    serviceID: 'foo',
+    counter,
+    id,
+    result,
+  },
+  origin: 'example.com',
+});
+
+const makeCall = (id: number, counter: number, method: string, params: any, discard = false) => ({
+  data: {
+    type: 'method',
+    serviceID: 'foo',
+    discard,
+    method,
+    counter,
+    id,
+    params,
+  },
+  origin: 'example.com',
+});
+
+const expectReady: Definition = {
+  action: Action.Receive,
+  object: {
+    type: 'method',
+    method: 'ready',
+    discard: false,
+    id: -1,
+    serviceID: 'foo',
+    counter: 0,
+    params: {
+      protocolVersion: '1.0',
+    },
+  },
+};
 
 describe('RPC', () => {
-  let rpc: RPC;
-  let messages: Array<RPCMessage<any>>;
-  let sendMessage: (ev: IMessageEvent) => void;
+  it('says it is ready if it gets a ready reply', () =>
+    testMarbles({
+      rpcInstance: 'a--de',
+      remoteContx: '-bc--',
+      definitions: {
+        a: { action: Action.IsReady, value: false },
+        b: expectReady,
+        c: {
+          action: Action.Send,
+          data: makeReply(-1, 0, {
+            protocolVersion: '1.0',
+          }),
+        },
+        d: {
+          action: Action.Receive,
+          subset: {
+            type: 'reply',
+            result: {
+              protocolVersion: '1.0',
+            },
+          },
+        },
+        e: { action: Action.IsReady, value: true },
+      },
+    }));
 
-  beforeEach(() => {
-    messages = [];
-    rpc = new RPC({
-      target: { postMessage: (data: any) => messages.push(JSON.parse(data)) },
-      receiver: {
-        readMessages: callback => {
-          sendMessage = event =>
-            callback({ data: JSON.stringify(event.data), origin: event.origin });
-          return () => undefined;
+  it('says it is ready if it gets a ready event later', () =>
+    testMarbles({
+      rpcInstance: 'a--de',
+      remoteContx: '-bc--',
+      definitions: {
+        a: { action: Action.IsReady, value: false },
+        b: expectReady,
+        c: {
+          action: Action.Send,
+          data: makeCall(
+            0,
+            0,
+            'ready',
+            {
+              protocolVersion: '1.0',
+            },
+            true,
+          ),
+        },
+        d: {
+          action: Action.Receive,
+          subset: {
+            type: 'method',
+            method: 'ready',
+            params: {
+              protocolVersion: '1.0',
+            },
+          },
+        },
+        e: { action: Action.IsReady, value: true },
+      },
+    }));
+
+  it('should reject methods from invalid service IDs', () =>
+    testMarbles({
+      rpcInstance: '---',
+      remoteContx: 'ab-',
+      definitions: {
+        a: expectReady,
+        b: {
+          action: Action.Send,
+          data: {
+            data: {
+              type: 'method',
+              method: 'ready',
+              serviceID: 'wut',
+              counter: 0,
+            },
+            origin: 'example.com',
+          },
         },
       },
-      origin: 'example.com',
-      serviceId: 'foo',
-    });
-  });
+    }));
 
-  afterEach(() => {
-    rpc.destroy();
-  });
-
-  const readyUp = async () => {
-    const promise = new Promise(resolve => {
-      rpc.expose('ready', (params: { protocolVersion: string }) => {
-        expect(params.protocolVersion).to.equal('1.1');
-        resolve();
-      });
-    });
-
-    sendMessage({
-      data: {
-        type: 'method',
-        method: 'ready',
-        serviceID: 'foo',
-        counter: 0,
-        params: {
-          protocolVersion: '1.1',
+  it('should reject methods from invalid origins', () =>
+    testMarbles({
+      rpcInstance: '---',
+      remoteContx: 'ab-',
+      definitions: {
+        a: expectReady,
+        b: {
+          action: Action.Send,
+          data: {
+            data: {
+              type: 'method',
+              method: 'ready',
+              serviceID: 'foo',
+              counter: 0,
+            },
+            origin: 'wut.com',
+          },
         },
       },
-      origin: 'example.com',
-    });
+    }));
 
-    await promise;
-
-    expect(rpc.remoteVersion()).to.equal('1.1');
-  };
-
-  const expectToIgnore = (message: IMessageEvent) => {
-    const previousLength = messages.length;
-    message.data.counter = (rpc as any).reorder.lastSequentialCall + 1;
-    sendMessage(message);
-    expect(messages).to.have.lengthOf(previousLength);
-  };
-
-  it('should announce itself to the remote when created', () => {
-    expect(messages).to.deep.equal([
-      {
-        type: 'method',
-        serviceID: 'foo',
-        id: 0,
-        method: 'ready',
-        discard: true,
-        counter: 0,
-        params: { protocolVersion: '1.0' },
-      },
-    ]);
-  });
-
-  it('should receive ready messages', async () => readyUp());
-
-  it('should reject messages recieved from other services', async () => {
-    await readyUp();
-    expectToIgnore({
-      data: {
-        type: 'method',
-        method: 'foo',
-        serviceID: 'invalid service ID',
-        params: { isInvalid: true },
-      },
-      origin: 'example.com',
-    });
-  });
-
-  it('should reject messages from other origins', async () => {
-    await readyUp();
-    expectToIgnore({
-      data: {
-        type: 'method',
-        method: 'foo',
-        serviceID: 'foo',
-        params: { isInvalid: true },
-      },
-      origin: 'contoso.com',
-    });
-  });
-
-  it('should reject malformed messages', async () => {
-    await readyUp();
-    expectToIgnore({
-      data: {
-        foo: 'bar',
-      },
-      origin: 'example.com',
-    });
-  });
-
-  it('should reorder messages', async () => {
-    await readyUp();
-
-    const sequence = [4, 2, 1, 3];
-    const promise = new Promise(resolve => {
-      let seen = 0;
-      rpc.expose('foo', (params: { counter: number }) => {
-        seen++;
-        expect(params.counter).to.equal(seen);
-        if (seen === sequence.length) {
-          resolve();
-        }
-      });
-    });
-
-    sequence.forEach(counter => {
-      sendMessage({
-        data: {
-          type: 'method',
-          method: 'foo',
-          serviceID: 'foo',
-          counter,
-          params: { counter },
+  it('should reject malformed messages', () =>
+    testMarbles({
+      rpcInstance: '---',
+      remoteContx: 'ab-',
+      definitions: {
+        a: expectReady,
+        b: {
+          action: Action.Send,
+          data: {
+            data: {
+              potato: true,
+            },
+            origin: 'example.com',
+          },
         },
-        origin: 'example.com',
-      });
-    });
-
-    await promise;
-  });
-
-  it('should give successful replies to messages', async () => {
-    await readyUp();
-
-    rpc.expose<{ level: number }>('bar', data => ({ level: data.level + 1 }));
-
-    sendMessage({
-      data: {
-        type: 'method',
-        method: 'bar',
-        serviceID: 'foo',
-        counter: 1,
-        id: 1,
-        params: { level: 0 },
       },
-      origin: 'example.com',
-    });
+    }));
 
-    await delay();
-
-    expect(messages).to.deep.include({
-      type: 'reply',
-      serviceID: 'foo',
-      counter: 1,
-      id: 1,
-      result: { level: 1 },
-    });
-  });
-
-  it('should bubble thrown RPC errors', async () => {
-    await readyUp();
-
-    rpc.expose('bar', () => {
-      throw new RPCError(1234, 'oh no!');
-    });
-
-    sendMessage({
-      data: {
-        type: 'method',
-        method: 'bar',
-        serviceID: 'foo',
-        counter: 1,
-        id: 1,
-        params: { level: 0 },
+  it('should make calls and receive+reorder replies', () =>
+    testMarbles({
+      rpcInstance: '-bcd---hij',
+      remoteContx: 'a---efg--',
+      definitions: {
+        a: expectReady,
+        b: {
+          action: Action.Send,
+          method: 'firstMethod',
+          data: {},
+        },
+        c: {
+          action: Action.Send,
+          method: 'secondMethod',
+          data: {},
+        },
+        d: {
+          action: Action.Send,
+          method: 'thirdMethod',
+          data: {},
+        },
+        e: {
+          action: Action.Send,
+          data: makeReply(3, 2, 'thirdReply'),
+        },
+        f: {
+          action: Action.Send,
+          data: makeReply(2, 1, 'secondReply'),
+        },
+        g: {
+          action: Action.Send,
+          data: makeReply(1, 0, 'firstReply'),
+        },
+        h: {
+          action: Action.Receive,
+          subset: { result: 'firstReply' },
+        },
+        i: {
+          action: Action.Receive,
+          subset: { result: 'secondReply' },
+        },
+        j: {
+          action: Action.Receive,
+          subset: { result: 'thirdReply' },
+        },
       },
-      origin: 'example.com',
-    });
+    }));
 
-    await delay();
-
-    expect(messages).to.deep.include({
-      type: 'reply',
-      serviceID: 'foo',
-      counter: 1,
-      id: 1,
-      error: { code: 1234, message: 'oh no!' },
-    });
-  });
-
-  it('should send messages and get replies', async () => {
-    await readyUp();
-
-    const a = rpc.call<number>('a', { cool: true });
-    const b = rpc.call<number>('b', { awesome: true });
-
-    sendMessage({
-      data: {
-        type: 'reply',
-        serviceID: 'foo',
-        counter: 1,
-        id: 2,
-        result: 'second result',
+  it('should bubble any returned rpc errors', () =>
+    testMarbles({
+      rpcInstance: '--c-',
+      remoteContx: 'ab-d',
+      handlers: {
+        bar: () => {
+          throw new RPCError(1234, 'oh no!');
+        },
       },
-      origin: 'example.com',
-    });
-
-    sendMessage({
-      data: {
-        type: 'reply',
-        serviceID: 'foo',
-        counter: 2,
-        id: 1,
-        result: 'first result',
+      definitions: {
+        a: expectReady,
+        b: { action: Action.Send, data: makeCall(0, 0, 'bar', null) },
+        c: {
+          action: Action.Receive,
+          subset: { method: 'bar' },
+        },
+        d: {
+          action: Action.Receive,
+          subset: {
+            error: { code: 1234, message: 'oh no!' },
+          },
+        },
       },
-      origin: 'example.com',
-    });
+    }));
 
-    expect(await a).to.equal('first result');
-    expect(await b).to.equal('second result');
-  });
-
-  it('bubbles reply errors', async () => {
-    await readyUp();
-
-    const a = rpc.call<number>('a', { cool: true });
-
-    sendMessage({
-      data: {
-        type: 'reply',
-        serviceID: 'foo',
-        counter: 1,
-        id: 1,
-        error: { code: 1234, message: 'oh no!' },
+  it('should error on unknown methods', () =>
+    testMarbles({
+      rpcInstance: '--c-',
+      remoteContx: 'ab-d',
+      definitions: {
+        a: expectReady,
+        b: { action: Action.Send, data: makeCall(0, 0, 'bar', null) },
+        c: {
+          action: Action.Receive,
+          subset: { method: 'bar' },
+        },
+        d: {
+          action: Action.Receive,
+          subset: {
+            error: { code: 4003, message: 'Unknown method name "bar"' },
+          },
+        },
       },
-      origin: 'example.com',
-    });
+    }));
 
-    try {
-      await a;
-      throw new Error('expected to throw');
-    } catch (err) {
-      if (!(err instanceof RPCError)) {
-        throw err;
-      }
-
-      expect(err.code).to.equal(1234);
-      expect(err.message).to.equal('oh no!');
-    }
-  });
-
-  it('rejects unknown methods', async () => {
-    await readyUp();
-
-    sendMessage({
-      data: {
-        type: 'method',
-        method: 'bar',
-        serviceID: 'foo',
-        counter: 1,
-        id: 1,
+  it('should reset call counter when ready is received', () =>
+    testMarbles({
+      rpcInstance: '-b--ef--',
+      remoteContx: 'a-cd--gh',
+      definitions: {
+        a: expectReady,
+        b: {
+          action: Action.Send,
+          method: 'hello',
+          data: true,
+        },
+        c: {
+          action: Action.Receive,
+          subset: { method: 'hello', counter: 1 },
+        },
+        d: {
+          action: Action.Send,
+          data: makeCall(-1, 0, 'ready', {
+            protocolVersion: '1.0',
+          }),
+        },
+        e: expectReady,
+        f: {
+          action: Action.Send,
+          method: 'helloAgain',
+          data: true,
+        },
+        g: {
+          action: Action.Receive,
+          subset: { type: 'reply', id: -1, counter: 0 },
+        },
+        h: {
+          action: Action.Receive,
+          subset: { type: 'method', counter: 1 },
+        },
       },
-      origin: 'example.com',
-    });
-
-    await delay();
-
-    expect(messages).to.deep.include({
-      type: 'reply',
-      serviceID: 'foo',
-      counter: 1,
-      id: 1,
-      result: null,
-      error: { code: 4003, message: 'Unknown method name' },
-    });
-  });
+    }));
 });

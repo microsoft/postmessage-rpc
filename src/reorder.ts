@@ -15,14 +15,18 @@ export class Reorder {
   private queue: Array<RPCMessageWithCounter<any>> = [];
 
   /**
+   * Resets the queue and call counter to the given value.
+   */
+  public reset(counter: number) {
+    this.lastSequentialCall = counter - 1;
+    this.queue = [];
+  }
+
+  /**
    * Appends a message to the reorder queue. Returns all messages which
    * are good to send out.
    */
   public append(packet: RPCMessageWithCounter<any>): Array<RPCMessageWithCounter<any>> {
-    if (packet.type === 'method' && packet.method === 'ready') {
-      this.lastSequentialCall = packet.counter - 1;
-    }
-
     if (packet.counter <= this.lastSequentialCall + 1) {
       const list = [packet];
       this.lastSequentialCall = packet.counter;

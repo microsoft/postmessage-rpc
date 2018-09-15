@@ -285,8 +285,14 @@ export class RPC extends EventEmitter {
     // calls starting from 0.
 
     if (this.isReadySignal(packet)) {
-      this.remoteProtocolVersion =
-        packet.type === 'method' ? packet.params.protocolVersion : packet.result.protocolVersion;
+      const params: { protocolVersion: string } | undefined =
+        packet.type === 'method' ? packet.params : packet.result;
+      if (params && params.protocolVersion) {
+        this.remoteProtocolVersion = params.protocolVersion;
+      } else {
+        this.remoteProtocolVersion = this.remoteProtocolVersion;
+      }
+
       this.callCounter = 0;
       this.reorder.reset(packet.counter);
       this.emit('isReady', true);

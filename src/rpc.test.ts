@@ -102,6 +102,29 @@ describe('RPC', () => {
       },
     }));
 
+  it('does not break on an empty/errorful ready reply (back compat)', () =>
+    testMarbles({
+      rpcInstance: 'a--de',
+      remoteContx: '-bc--',
+      definitions: {
+        a: { action: Action.IsReady, value: false },
+        b: expectReady,
+        c: {
+          action: Action.Send,
+          data: makeReply(-1, 0, null),
+        },
+        d: {
+          action: Action.Receive,
+          subset: {
+            type: 'reply',
+            id: -1,
+            result: null,
+          },
+        },
+        e: { action: Action.IsReady, value: true },
+      },
+    }));
+
   it('should reject methods from invalid service IDs', () =>
     testMarbles({
       rpcInstance: '---',

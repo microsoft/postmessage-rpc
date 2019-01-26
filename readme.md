@@ -21,7 +21,7 @@ const rpc = new RPC({
   // The window you want to talk to:
   target: myIframe.contentWindow,
   // This should be unique for each of your producer<->consumer pairs:
-  service: 'my-awesome-service',
+  serviceId: 'my-awesome-service',
 
   // Optionally, allowlist the origin you want to talk to:
   // origin: 'example.com',
@@ -37,7 +37,7 @@ import { RPC } from '@mixer/postmessage-rpc';
 
 const rpc = new RPC({
   target: window.parent,
-  service: 'my-awesome-service',
+  serviceId: 'my-awesome-service',
 });
 
 rpc.call('add', { a: 3, b: 5 }).then(result => console.log('3 + 5 is', result));
